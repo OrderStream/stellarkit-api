@@ -6899,6 +6899,171 @@ router.get("/:id/smart-contract-interactions", async (req, res, next) => {
   }
 });
 
+/**
+ * GET /account/:id/largest-transactions
+ *
+ * Surface the highest value transactions for an account.
+ * Query Parameters:
+ *   - direction: 'sent' | 'received' | 'both' (default: 'both')
+ *   - limit: integer between 1 and 50 (default: 10, capped at 50)
+ *   - days: optional integer between 1 and 90 (default: 30)
+ */
+router.get("/:id/largest-transactions", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    validateAccountId(id);
+
+    // Validate direction query param
+    const rawDirection = req.query.direction || "both";
+    const direction = String(rawDirection).toLowerCase().trim();
+    if (!["sent", "received", "both"].includes(direction)) {
+      const err = new Error(
+        "Query parameter 'direction': must be one of 'sent', 'received', 'both'."
+      );
+      err.isValidation = true;
+      err.field = "direction";
+      err.receivedValue = req.query.direction;
+      err.expectedFormat = "sent|received|both";
+      return next(err);
+    }
+
+    // Validate limit (default 10, capped at 50)
+    let limit = 10;
+    if (req.query.limit !== undefined) {
+      const parsedLimit = parseInt(req.query.limit, 10);
+      if (isNaN(parsedLimit) || parsedLimit < 1) {
+        const err = new Error(
+          "Query parameter 'limit': must be an integer between 1 and 50."
+        );
+        err.isValidation = true;
+        err.field = "limit";
+        err.receivedValue = String(req.query.limit);
+        err.expectedFormat = "1–50";
+        return next(err);
+      }
+      limit = Math.min(parsedLimit, 50);
+    }
+
+    // Validate days (default 30, max 90)
+    let days = 30;
+    if (req.query.days !== undefined) {
+      const parsedDays = parseInt(req.query.days, 10);
+      if (isNaN(parsedDays) || parsedDays < 1 || parsedDays > 90) {
+        const err = new Error(
+          "Query parameter 'days': must be an integer between 1 and 90."
+        );
+        err.isValidation = true;
+        err.field = "days";
+        err.receivedValue = String(req.query.days);
+        err.expectedFormat = "1–90";
+        return next(err);
+      }
+      days = parsedDays;
+    }
+
+    const now = new Date();
+    const since = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+
+    // Verify account exists via Horizon (returns 404 if not found)
+    await withHorizonTiming(req, () => server.loadAccount(id));
+
+    // Fetch payments/operations for account
+    const paymentsResponse = await server
+      .payments()
+      .forAccount(id)
+      .limit(200)
+      .order("desc")
+      .call();
+
+    const records = paymentsResponse.records || [];
+    const txMap = new Map();
+
+    for (const op of records) {
+      const opCreatedAt = new Date(op.created_at);
+      if (opCreatedAt < since) continue;
+      if (op.transaction_successful === false) continue;
+
+      const hash = op.transaction_hash;
+      if (!hash) continue;
+
+      const isSent =
+        (op.type === "payment" && op.from === id) ||
+        (op.type === "path_payment_strict_send" && op.from === id) ||
+        (op.type === "path_payment_strict_receive" && op.from === id) ||
+        (op.type === "create_account" && op.funder === id) ||
+        (op.type === "account_merge" && op.account === id);
+
+      const isReceived =
+        (op.type === "payment" && op.to === id) ||
+        (op.type === "path_payment_strict_send" && op.to === id) ||
+        (op.type === "path_payment_strict_receive" && op.to === id) ||
+        (op.type === "create_account" && op.account === id) ||
+        (op.type === "account_merge" && op.into === id);
+
+      if (!isSent && !isReceived) continue;
+
+      const amountVal = parseFloat(
+        op.amount || op.starting_balance || op.source_amount || "0"
+      );
+
+      if (!txMap.has(hash)) {
+        txMap.set(hash, {
+          hash,
+          totalValue: 0,
+          operationCount: 0,
+          hasSent: false,
+          hasReceived: false,
+          timestamp: toISOTimestamp(op.created_at),
+        });
+      }
+
+      const txEntry = txMap.get(hash);
+      txEntry.totalValue += amountVal;
+      txEntry.operationCount += 1;
+      if (isSent) txEntry.hasSent = true;
+      if (isReceived) txEntry.hasReceived = true;
+    }
+
+    const transactions = [];
+    for (const entry of txMap.values()) {
+      let txDirection = "both";
+      if (entry.hasSent && !entry.hasReceived) txDirection = "sent";
+      else if (!entry.hasSent && entry.hasReceived) txDirection = "received";
+
+      if (direction !== "both" && txDirection !== direction) {
+        continue;
+      }
+
+      transactions.push({
+        hash: entry.hash,
+        totalValueXLM: entry.totalValue.toFixed(7),
+        operationCount: entry.operationCount,
+        direction: txDirection,
+        timestamp: entry.timestamp,
+      });
+    }
+
+    // Sort descending by totalValueXLM
+    transactions.sort(
+      (a, b) => parseFloat(b.totalValueXLM) - parseFloat(a.totalValueXLM)
+    );
+
+    const paginatedTransactions = transactions.slice(0, limit);
+
+    return success(res, {
+      accountId: id,
+      transactions: paginatedTransactions,
+      period: {
+        days,
+        from: since.toISOString(),
+        to: now.toISOString(),
+      },
+    });
+  } catch (err) {
+    handleAccountNotFound(err, next, req.params.id);
+  }
+});
+
 module.exports = router;
 
 // SHELL_SYNC_MARKER
