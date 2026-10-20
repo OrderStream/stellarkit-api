@@ -435,6 +435,137 @@ router.get("/depth/:sellAsset/:buyAsset", async (req, res, next) => {
 });
 
 /**
+ * @route GET /dex/order-book-depth/:sellAsset/:buyAsset
+ * @desc Returns full order book depth with cumulative volume at each price level.
+ * @query {number} [depth=20] - Number of depth levels to return, max 200.
+ */
+router.get("/order-book-depth/:sellAsset/:buyAsset", async (req, res, next) => {
+  try {
+    const { sellAsset, buyAsset } = req.params;
+
+    const parseStellarAsset = (assetString) => {
+      const parts = assetString.split(":");
+      if (parts.length !== 2) {
+        throw new Error(`Invalid asset format: "${assetString}". Expected format: CODE:ISSUER`);
+      }
+
+      const [code, issuer] = parts;
+
+      if (code.toUpperCase() === "XLM" && issuer.toLowerCase() === "native") {
+        return Asset.native();
+      }
+
+      validateAssetCode(code);
+      validateAccountId(issuer);
+
+      return new Asset(code.toUpperCase(), issuer);
+    };
+
+    let selling, buying;
+    try {
+      selling = parseStellarAsset(sellAsset);
+      buying = parseStellarAsset(buyAsset);
+    } catch (err) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          type: "ValidationError",
+          message: err.message,
+        },
+      });
+    }
+
+    let depth = 20;
+    if (req.query.depth !== undefined) {
+      const parsedDepth = parseInt(req.query.depth, 10);
+      if (isNaN(parsedDepth) || parsedDepth < 1) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            type: "ValidationError",
+            message: "Query parameter 'depth' must be an integer between 1 and 200.",
+          },
+        });
+      }
+      depth = Math.min(parsedDepth, 200);
+    }
+
+    const orderBookResponse = await server
+      .orderbook(selling, buying)
+      .limit(depth)
+      .call();
+
+    const rawBids = orderBookResponse.bids || [];
+    const rawAsks = orderBookResponse.asks || [];
+
+    if (rawBids.length === 0 && rawAsks.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: makeOrderBookEmptyError(selling.getCode(), buying.getCode()),
+      });
+    }
+
+    // Bids sorted price descending
+    const sortedBids = [...rawBids].sort((a, b) => parseFloat(b.price) - parseFloat(a.price));
+    let bidCumulative = 0;
+    const bids = sortedBids.map((b) => {
+      const amountFloat = parseFloat(b.amount || "0");
+      bidCumulative += amountFloat;
+      return {
+        price: parseFloat(b.price || "0").toFixed(7),
+        amount: amountFloat.toFixed(7),
+        cumulative: bidCumulative.toFixed(7),
+      };
+    });
+
+    // Asks sorted price ascending
+    const sortedAsks = [...rawAsks].sort((a, b) => parseFloat(a.price) - parseFloat(b.price));
+    let askCumulative = 0;
+    const asks = sortedAsks.map((a) => {
+      const amountFloat = parseFloat(a.amount || "0");
+      askCumulative += amountFloat;
+      return {
+        price: parseFloat(a.price || "0").toFixed(7),
+        amount: amountFloat.toFixed(7),
+        cumulative: askCumulative.toFixed(7),
+      };
+    });
+
+    // Calculate spread and midPrice
+    let spread = "0.0000000";
+    let midPrice = "0.0000000";
+    if (bids.length > 0 && asks.length > 0) {
+      const topBid = parseFloat(bids[0].price);
+      const topAsk = parseFloat(asks[0].price);
+      spread = Math.abs(topAsk - topBid).toFixed(7);
+      midPrice = ((topAsk + topBid) / 2).toFixed(7);
+    } else if (bids.length > 0) {
+      midPrice = parseFloat(bids[0].price).toFixed(7);
+    } else if (asks.length > 0) {
+      midPrice = parseFloat(asks[0].price).toFixed(7);
+    }
+
+    const pair = `${selling.isNative() ? "XLM:native" : `${selling.getCode()}:${selling.getIssuer()}`}/${buying.isNative() ? "XLM:native" : `${buying.getCode()}:${buying.getIssuer()}`}`;
+
+    return success(res, {
+      pair,
+      bids,
+      asks,
+      spread,
+      midPrice,
+    });
+  } catch (err) {
+    if (err.response && err.response.status === 404) {
+      return res.status(404).json({
+        success: false,
+        error: makeOrderBookEmptyError(req.params.sellAsset, req.params.buyAsset),
+      });
+    }
+    next(err);
+  }
+});
+
+/**
  * @route GET /dex/price/:sellAsset/:buyAsset
  * @desc Estimates effective conversion rate using strict-send pathfinding for a given sell amount.
  * @param {import("express").Request} req - Express request object.
