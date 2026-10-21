@@ -48,8 +48,9 @@ This project is ideal for:
 - [Soroban Integration Guide](docs/soroban-integration.md) - End-to-end workflow for querying contract state, monitoring events, checking expiry, and simulating invocations
 - [Soroban Endpoints Guide](docs/soroban.md) — Soroban contract endpoints: what Soroban is, how contract IDs work, and how to inspect deployed contracts via `/soroban/contract/:id`, `/soroban/contract/:id/storage`, and `/soroban/contract/:id/functions`
 - [Production Deployment Guide](docs/deployment.md) - Deploy to production with Node.js, Docker, Railway, Render, or Fly.io
-- [API Design Guidelines](docs/api-design.md) - Design conventions and response patterns
 - [Response Format Guide](docs/response-format.md) - Standard response envelopes, pagination, and data formats
+- [Pagination Guide](docs/pagination.md) - Basic cursor and limit parameters reference
+- [Advanced Pagination Patterns Guide](docs/pagination-patterns.md) - Advanced patterns for high-volume data fetching, cursor resumption, parallel pagination, and complete Node.js streaming example
 - [Streaming Guide](docs/streaming.md) - SSE and WebSocket streaming endpoints, event payloads, reconnection, and clean close handling
 - [Real-Time Guide](docs/real-time-guide.md) - Build real-time Stellar apps by combining SSE/WebSocket streams with REST calls and polling, handling interruptions, and a complete Node.js balance monitor
 - [Webhooks Guide](docs/webhooks.md) - Register webhooks, available events, payload shapes, signature verification, retries, and unregistration
